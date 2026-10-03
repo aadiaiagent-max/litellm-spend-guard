@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { dayKey, guard } from "../src/spend-guard.mjs";
+import { dayKey, guard, windowStart } from "../src/spend-guard.mjs";
 
 function options(overrides = {}) {
   return {
@@ -94,4 +94,42 @@ test("rejects a bad payload", () => {
       ),
     /user/,
   );
+});
+
+test("windowStart uses UTC midnight and Monday weeks", () => {
+  assert.equal(windowStart("2026-10-03T23:59:59Z", "day").toISOString(), "2026-10-03T00:00:00.000Z");
+  // 2026-10-03 is a Saturday, so the week opened the previous Monday.
+  assert.equal(windowStart("2026-10-03T15:00:00Z", "week").toISOString(), "2026-09-28T00:00:00.000Z");
+  assert.equal(windowStart("2026-10-04T23:00:00Z", "week").toISOString(), "2026-09-28T00:00:00.000Z");
+  assert.equal(windowStart("2026-10-05T00:00:00Z", "week").toISOString(), "2026-10-05T00:00:00.000Z");
+});
+
+test("weekly cap blocks across days in the same week and does not record the denied call", () => {
+  const opts = options({ dailyCapUsd: 5, weeklyCapUsd: 1 });
+  const first = guard(
+    { user: "ada", model: "openai/gpt-4o-mini", cost: 0.6, timestamp: "2026-10-03T12:00:00Z" },
+    opts,
+  );
+  const second = guard(
+    { user: "ada", model: "openai/gpt-4o-mini", cost: 0.6, timestamp: "2026-10-04T12:00:00Z" },
+    opts,
+  );
+  assert.equal(first.decision, "allow");
+  assert.equal(second.decision, "deny");
+  assert.match(second.reason, /weekly cap/);
+  assert.equal(opts.store.get("ada|2026-10-04"), undefined);
+  assert.equal(opts.store.get("ada|week|2026-09-28T00:00:00.000Z"), 0.6);
+});
+
+test("a new week clears the weekly total", () => {
+  const opts = options({ dailyCapUsd: 5, weeklyCapUsd: 0.5 });
+  guard(
+    { user: "ada", model: "openai/gpt-4o-mini", cost: 0.5, timestamp: "2026-10-04T12:00:00Z" },
+    opts,
+  );
+  const nextWeek = guard(
+    { user: "ada", model: "openai/gpt-4o-mini", cost: 0.5, timestamp: "2026-10-05T00:00:00Z" },
+    opts,
+  );
+  assert.equal(nextWeek.decision, "allow");
 });
