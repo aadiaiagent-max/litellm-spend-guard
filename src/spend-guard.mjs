@@ -6,8 +6,21 @@ function asDate(timestamp) {
   return date;
 }
 
+export function windowStart(timestamp, window) {
+  const date = asDate(timestamp);
+  if (window !== "day" && window !== "week") {
+    throw new TypeError('window must be "day" or "week"');
+  }
+  const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  if (window === "week") {
+    const sinceMonday = (date.getUTCDay() + 6) % 7;
+    start.setUTCDate(start.getUTCDate() - sinceMonday);
+  }
+  return start;
+}
+
 export function dayKey(timestamp) {
-  return asDate(timestamp).toISOString().slice(0, 10);
+  return windowStart(timestamp, "day").toISOString().slice(0, 10);
 }
 
 function requireNonEmptyString(value, label) {
@@ -21,9 +34,14 @@ function readConfig(options) {
   if (options === null || typeof options !== "object") {
     throw new TypeError("options are required");
   }
-  const { dailyCapUsd, allowedPrefixes, store } = options;
+  const { dailyCapUsd, weeklyCapUsd, allowedPrefixes, store } = options;
   if (typeof dailyCapUsd !== "number" || !Number.isFinite(dailyCapUsd) || dailyCapUsd < 0) {
     throw new TypeError("dailyCapUsd must be a finite number >= 0");
+  }
+  if (weeklyCapUsd !== undefined) {
+    if (typeof weeklyCapUsd !== "number" || !Number.isFinite(weeklyCapUsd) || weeklyCapUsd < 0) {
+      throw new TypeError("weeklyCapUsd must be a finite number >= 0");
+    }
   }
   if (!Array.isArray(allowedPrefixes) || allowedPrefixes.length === 0) {
     throw new TypeError("allowedPrefixes must be a non-empty list");
@@ -36,7 +54,7 @@ function readConfig(options) {
   if (!(store instanceof Map)) {
     throw new TypeError("store must be a Map");
   }
-  return { dailyCapUsd, allowedPrefixes, store };
+  return { dailyCapUsd, weeklyCapUsd, allowedPrefixes, store };
 }
 
 function readEvent(event) {
@@ -56,6 +74,14 @@ function modelAllowed(model, prefixes) {
   return prefixes.some((prefix) => model.startsWith(prefix));
 }
 
+function readTotal(store, key) {
+  const already = store.get(key) ?? 0;
+  if (typeof already !== "number" || !Number.isFinite(already)) {
+    throw new TypeError(`store entry ${key} is not a number`);
+  }
+  return already;
+}
+
 export function guard(event, options) {
   const config = readConfig(options);
   const row = readEvent(event);
@@ -66,10 +92,7 @@ export function guard(event, options) {
     };
   }
   const key = `${row.user}|${dayKey(row.timestamp)}`;
-  const already = config.store.get(key) ?? 0;
-  if (typeof already !== "number" || !Number.isFinite(already)) {
-    throw new TypeError(`store entry ${key} is not a number`);
-  }
+  const already = readTotal(config.store, key);
   const next = already + row.cost;
   if (next > config.dailyCapUsd) {
     return {
@@ -77,7 +100,20 @@ export function guard(event, options) {
       reason: `daily cap ${config.dailyCapUsd} USD would be exceeded for ${row.user} (spent ${already}, this call ${row.cost})`,
     };
   }
+  let weekKey = null;
+  let spentWeek = 0;
+  if (config.weeklyCapUsd !== undefined) {
+    weekKey = `${row.user}|week|${windowStart(row.timestamp, "week").toISOString()}`;
+    spentWeek = readTotal(config.store, weekKey);
+    if (spentWeek + row.cost > config.weeklyCapUsd) {
+      return {
+        decision: "deny",
+        reason: `weekly cap ${config.weeklyCapUsd} USD would be exceeded for ${row.user} (spent ${spentWeek}, this call ${row.cost})`,
+      };
+    }
+  }
   config.store.set(key, next);
+  if (weekKey) config.store.set(weekKey, spentWeek + row.cost);
   return {
     decision: "allow",
     reason: "within daily cap",

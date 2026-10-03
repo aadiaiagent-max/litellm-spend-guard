@@ -22,7 +22,7 @@ const result = guard(event, opts);
 if (result.decision === "deny") console.log(result.reason);
 ```
 
-Days are UTC (`YYYY-MM-DD` from the timestamp). A call that would push the stored total over `dailyCapUsd` is denied and not recorded. Hitting the cap exactly is allowed. Prefix match is `startsWith`.
+Days are UTC (`YYYY-MM-DD` from the timestamp). Pass `weeklyCapUsd` to also cap Monday-to-Monday UTC spend; `windowStart(timestamp, "week")` is the reset instant. Leave `weeklyCapUsd` off and only the daily cap runs. A call that would push the stored total over `dailyCapUsd` is denied and not recorded. Hitting the cap exactly is allowed. Prefix match is `startsWith`.
 
 ```bash
 node --test
